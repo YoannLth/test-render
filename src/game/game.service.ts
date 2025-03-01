@@ -1,23 +1,27 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { Card, GameState, Player, GameMove, CardType, CatType } from './game.interface';
 
 @Injectable()
 export class GameService {
+  private readonly logger = new Logger(GameService.name);
   private games: Map<string, GameState> = new Map();
 
   private createDeck(playerCount: number): Card[] {
+    this.logger.debug(`Creating deck for ${playerCount} players`);
     const deck: Card[] = [];
     
     // Add Exploding Kittens (number of players - 1)
     for (let i = 0; i < playerCount - 1; i++) {
       deck.push({ id: uuidv4(), type: CardType.EXPLODING_KITTEN });
     }
+    this.logger.debug(`Added ${playerCount - 1} Exploding Kittens`);
 
     // Add Defuse cards (6 cards)
     for (let i = 0; i < 6; i++) {
       deck.push({ id: uuidv4(), type: CardType.DEFUSE });
     }
+    this.logger.debug('Added 6 Defuse cards');
 
     // Add Nope cards (5 cards)
     for (let i = 0; i < 5; i++) {
@@ -56,23 +60,26 @@ export class GameService {
       }
     });
 
-    // Shuffle the deck
+    this.logger.debug(`Final deck size: ${deck.length} cards`);
     return this.shuffleDeck(deck);
   }
 
   private shuffleDeck(deck: Card[]): Card[] {
+    this.logger.debug('Shuffling deck');
     return [...deck].sort(() => Math.random() - 0.5);
   }
 
   private dealCards(deck: Card[], players: Player[]): { deck: Card[], players: Player[] } {
+    this.logger.debug(`Dealing cards to ${players.length} players`);
     const updatedPlayers = [...players];
     const updatedDeck = [...deck];
 
-    // Give each player 7 random cards and 1 Defuse card
     updatedPlayers.forEach(player => {
+      this.logger.debug(`Dealing cards to player ${player.username} (${player.id})`);
       // Add 1 Defuse card
       const defuseCard = { id: uuidv4(), type: CardType.DEFUSE };
       player.cards = [defuseCard];
+      this.logger.debug(`Added Defuse card to player ${player.username}`);
 
       // Add 7 random cards
       for (let i = 0; i < 7; i++) {
@@ -80,12 +87,15 @@ export class GameService {
         const card = updatedDeck.splice(randomIndex, 1)[0];
         player.cards.push(card);
       }
+      this.logger.debug(`Player ${player.username} now has ${player.cards.length} cards`);
     });
 
+    this.logger.debug(`Remaining deck size: ${updatedDeck.length}`);
     return { deck: updatedDeck, players: updatedPlayers };
   }
 
   createGame(player: Player): GameState {
+    this.logger.log(`Creating new game for player ${player.username} (${player.id})`);
     const gameState: GameState = {
       id: uuidv4(),
       players: [{
@@ -102,20 +112,26 @@ export class GameService {
     };
 
     this.games.set(gameState.id, gameState);
+    this.logger.log(`Game ${gameState.id} created successfully`);
     return gameState;
   }
 
   joinGame(gameId: string, player: Player): GameState {
+    this.logger.log(`Player ${player.username} (${player.id}) attempting to join game ${gameId}`);
     const game = this.games.get(gameId);
+    
     if (!game) {
+      this.logger.error(`Game ${gameId} not found`);
       throw new Error('Game not found');
     }
 
     if (game.players.length >= 10) {
+      this.logger.warn(`Game ${gameId} is full (${game.players.length} players)`);
       throw new Error('Game is full');
     }
 
     if (game.status !== 'waiting') {
+      this.logger.warn(`Game ${gameId} has already started`);
       throw new Error('Game has already started');
     }
 
@@ -127,14 +143,17 @@ export class GameService {
     };
 
     game.players.push(newPlayer);
+    this.logger.log(`Player ${player.username} joined game ${gameId}. Total players: ${game.players.length}`);
 
     // If we have at least 3 players, start the game
     if (game.players.length >= 3) {
+      this.logger.log(`Starting game ${gameId} with ${game.players.length} players`);
       game.status = 'playing';
       game.deck = this.createDeck(game.players.length);
       const { deck, players } = this.dealCards(game.deck, game.players);
       game.deck = deck;
       game.players = players;
+      this.logger.log(`Game ${gameId} started successfully`);
     }
 
     this.games.set(gameId, game);
@@ -142,24 +161,31 @@ export class GameService {
   }
 
   makeMove(gameId: string, move: GameMove): GameState {
+    this.logger.log(`Processing move in game ${gameId}:`, move);
     const game = this.games.get(gameId);
+    
     if (!game) {
+      this.logger.error(`Game ${gameId} not found`);
       throw new Error('Game not found');
     }
 
     if (game.status !== 'playing') {
+      this.logger.error(`Game ${gameId} is not in playing state (current: ${game.status})`);
       throw new Error('Game is not in playing state');
     }
 
     const currentPlayer = game.players.find(p => p.id === game.currentTurn);
     if (!currentPlayer || !currentPlayer.isAlive) {
+      this.logger.error(`Invalid current player in game ${gameId}. Player: ${JSON.stringify(currentPlayer)}`);
       throw new Error('Current player is not valid');
     }
 
     if (move.playerId !== game.currentTurn) {
+      this.logger.error(`Not player's turn. Expected: ${game.currentTurn}, Got: ${move.playerId}`);
       throw new Error('Not your turn');
     }
 
+    this.logger.debug(`Processing ${move.type} move for player ${currentPlayer.username}`);
     switch (move.type) {
       case 'PLAY_CARD':
         return this.handlePlayCard(game, move);
@@ -170,20 +196,34 @@ export class GameService {
       case 'NOPE':
         return this.handleNope(game, move);
       default:
+        this.logger.error(`Invalid move type: ${move.type}`);
         throw new Error('Invalid move type');
     }
   }
 
   private handlePlayCard(game: GameState, move: GameMove): GameState {
-    if (!move.cardId) throw new Error('Card ID is required');
+    this.logger.debug(`Player ${move.playerId} attempting to play card ${move.cardId}`);
+    
+    if (!move.cardId) {
+      this.logger.error('Card ID is required for PLAY_CARD move');
+      throw new Error('Card ID is required');
+    }
     
     const player = game.players.find(p => p.id === move.playerId);
-    if (!player) throw new Error('Player not found');
+    if (!player) {
+      this.logger.error(`Player ${move.playerId} not found in game ${game.id}`);
+      throw new Error('Player not found');
+    }
 
     const cardIndex = player.cards.findIndex(c => c.id === move.cardId);
-    if (cardIndex === -1) throw new Error('Card not found in player hand');
+    if (cardIndex === -1) {
+      this.logger.error(`Card ${move.cardId} not found in player ${player.username}'s hand`);
+      throw new Error('Card not found in player hand');
+    }
 
     const card = player.cards[cardIndex];
+    this.logger.debug(`Player ${player.username} playing ${card.type} card`);
+    
     player.cards.splice(cardIndex, 1);
     game.discardPile.push(card);
 
@@ -194,36 +234,50 @@ export class GameService {
       card: card,
       targetPlayerId: move.targetPlayerId
     };
+    this.logger.debug(`Last action saved: ${JSON.stringify(game.lastAction)}`);
 
     switch (card.type) {
       case CardType.ATTACK:
         const nextPlayer = this.getNextPlayer(game);
         nextPlayer.turnsToPlay += 2;
+        this.logger.debug(`Attack card played. Next player ${nextPlayer.username} now has ${nextPlayer.turnsToPlay} turns`);
         this.endTurn(game);
         break;
 
       case CardType.SKIP:
+        this.logger.debug(`Skip card played by ${player.username}`);
         this.endTurn(game);
         break;
 
       case CardType.SEE_THE_FUTURE:
         game.topThreeCards = game.deck.slice(0, 3);
+        this.logger.debug(`See the Future card played. Top 3 cards revealed to ${player.username}`);
         break;
 
       case CardType.SHUFFLE:
+        this.logger.debug(`Shuffle card played. Shuffling deck...`);
         game.deck = this.shuffleDeck(game.deck);
         break;
 
       case CardType.FAVOR:
-        if (!move.targetPlayerId) throw new Error('Target player is required for Favor card');
+        if (!move.targetPlayerId) {
+          this.logger.error('Target player is required for Favor card');
+          throw new Error('Target player is required for Favor card');
+        }
         const targetPlayer = game.players.find(p => p.id === move.targetPlayerId);
-        if (!targetPlayer || !targetPlayer.isAlive) throw new Error('Target player not found or not alive');
-        if (targetPlayer.cards.length === 0) throw new Error('Target player has no cards');
+        if (!targetPlayer || !targetPlayer.isAlive) {
+          this.logger.error(`Target player ${move.targetPlayerId} not found or not alive`);
+          throw new Error('Target player not found or not alive');
+        }
+        if (targetPlayer.cards.length === 0) {
+          this.logger.error(`Target player ${targetPlayer.username} has no cards`);
+          throw new Error('Target player has no cards');
+        }
         
-        // Randomly select a card from target player's hand
         const randomIndex = Math.floor(Math.random() * targetPlayer.cards.length);
         const selectedCard = targetPlayer.cards.splice(randomIndex, 1)[0];
         player.cards.push(selectedCard);
+        this.logger.debug(`Favor card: ${player.username} received ${selectedCard.type} from ${targetPlayer.username}`);
         break;
 
       case CardType.CAT:
@@ -243,13 +297,19 @@ export class GameService {
         break;
     }
 
+    this.logger.debug(`Card play completed successfully`);
     return game;
   }
 
   private handleDrawCard(game: GameState, move: GameMove): GameState {
     const player = game.players.find(p => p.id === move.playerId);
-    if (!player) throw new Error('Player not found');
-
+    if (!player) {
+      this.logger.error(`Player ${move.playerId} not found in game ${game.id}`);
+      throw new Error('Player not found');
+    }
+    
+    this.logger.debug(`Player ${player.username} drawing a card`);
+    
     const drawnCard = game.deck.shift();
     if (!drawnCard) {
       throw new Error('No cards left in deck');

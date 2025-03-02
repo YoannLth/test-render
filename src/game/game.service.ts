@@ -100,6 +100,33 @@ export class GameService {
     return [...deck].sort(() => Math.random() - 0.5);
   }
 
+  private debugPlayerCards: CardType[] = [
+    CardType.DEFUSE,
+    CardType.ATTACK,
+    CardType.SKIP,
+    CardType.SKIP,
+    CardType.SKIP,
+    CardType.SHUFFLE,
+    CardType.SEE_THE_FUTURE,
+    CardType.SEE_THE_FUTURE,
+    CardType.SEE_THE_FUTURE,
+    CardType.SEE_THE_FUTURE,
+    CardType.SEE_THE_FUTURE,
+    CardType.SEE_THE_FUTURE
+  ];
+
+  private debugDeckCards: CardType[] = [
+    CardType.EXPLODING_KITTEN,
+    CardType.DEFUSE,
+    CardType.ATTACK,
+    CardType.SKIP,
+    CardType.SHUFFLE,
+    CardType.SEE_THE_FUTURE,
+    CardType.NOPE,
+  ];
+
+  private useDebugCards: boolean = true;
+
   private dealCards(deck: Card[], players: Player[]): { deck: Card[], players: Player[] } {
     this.logger.debug(`Dealing cards to ${players.length} players`);
     const updatedPlayers = [...players];
@@ -119,6 +146,11 @@ export class GameService {
         player.cards.push(card);
       }
       this.logger.debug(`Player ${player.username} now has ${player.cards.length} cards`);
+
+      if (this.useDebugCards) {
+        const debugPlayerCards = this.debugPlayerCards.map(cardType => ({ id: uuidv4(), type: cardType }));
+        player.cards = debugPlayerCards;
+      }
     });
 
     // Add Exploding Kittens after dealing (number of players - 1)
@@ -128,7 +160,13 @@ export class GameService {
     this.logger.debug(`Added ${players.length - 1} Exploding Kittens to the deck`);
 
     // Shuffle the deck again after adding exploding kittens
-    const finalDeck = this.shuffleDeck(updatedDeck);
+    let finalDeck = this.shuffleDeck(updatedDeck);
+
+    if (this.useDebugCards) {
+      const debugDeckCards = this.debugDeckCards.map(cardType => ({ id: uuidv4(), type: cardType }));
+      finalDeck = debugDeckCards;
+    }
+
     this.logger.debug(`Final deck size after dealing and adding kittens: ${finalDeck.length}`);
 
     return { deck: finalDeck, players: updatedPlayers };
@@ -283,10 +321,17 @@ export class GameService {
 
     switch (card.type) {
       case CardType.ATTACK:
+        let turnsToPlay = 2;
+        if (player.turnsToPlay === 1) {
+          turnsToPlay = 2; // classic case
+        } else {
+          let turnsNeededToPlay = player.turnsToPlay; // cumulate the attack cards
+          turnsToPlay = turnsNeededToPlay + 2;
+        }
         const nextPlayer = this.getNextPlayer(game);
-        nextPlayer.turnsToPlay += 2;
+        nextPlayer.turnsToPlay = turnsToPlay;
         this.logger.debug(`Attack card played. Next player ${nextPlayer.username} now has ${nextPlayer.turnsToPlay} turns`);
-        this.endTurn(game);
+        this.endTurn(game, true);
         break;
 
       case CardType.SKIP:
@@ -411,6 +456,14 @@ export class GameService {
     // Insert the exploding kitten back into the deck at the specified position
     game.deck.splice(move.targetPosition, 0, lastAction.card);
     game.explodingKittenPosition = undefined;
+    
+    // Update the last action to reflect the defuse
+    game.lastAction = {
+      type: 'DEFUSE_KITTEN',
+      playerId: move.playerId,
+      card: lastAction.card
+    };
+    
     this.endTurn(game);
 
     return game;
@@ -435,11 +488,15 @@ export class GameService {
     return game;
   }
 
-  private endTurn(game: GameState): void {
+  private endTurn(game: GameState, superSkip: boolean = false): void {
     const currentPlayer = game.players.find(p => p.id === game.currentTurn);
     if (!currentPlayer) throw new Error('Current player not found');
 
-    currentPlayer.turnsToPlay--;
+    if (superSkip) {
+      currentPlayer.turnsToPlay = 0;
+    } else {
+      currentPlayer.turnsToPlay--;
+    }
 
     if (currentPlayer.turnsToPlay <= 0) {
       currentPlayer.turnsToPlay = 1;

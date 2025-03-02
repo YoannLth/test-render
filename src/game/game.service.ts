@@ -1,22 +1,53 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
-import { Card, GameState, Player, GameMove, CardType, CatType } from './game.interface';
+import { Card, GameState, Player, GameMove, CardType, CatType, PublicGameState, PublicPlayer, PublicGameAction, GameAction } from './game.interface';
 
 @Injectable()
 export class GameService {
   private readonly logger = new Logger(GameService.name);
   private games: Map<string, GameState> = new Map();
 
+  // Convert private game state to public game state
+  private toPublicGameState(gameState: GameState, playerId?: string): PublicGameState {
+    this.logger.debug(`Converting game ${gameState.id} to public state for player ${playerId}`);
+    return {
+      id: gameState.id,
+      players: gameState.players.map(player => this.toPublicPlayer(player, player.id === playerId)),
+      deckSize: gameState.deck.length,
+      discardPile: gameState.discardPile,
+      currentTurn: gameState.currentTurn,
+      status: gameState.status,
+      turnDirection: gameState.turnDirection,
+      lastAction: gameState.lastAction ? this.toPublicGameAction(gameState.lastAction) : undefined,
+      winner: gameState.winner ? this.toPublicPlayer(gameState.winner, gameState.winner.id === playerId) : undefined
+    };
+  }
+
+  // Convert private player state to public player state
+  private toPublicPlayer(player: Player, isCurrentPlayer: boolean): PublicPlayer {
+    return {
+      id: player.id,
+      username: player.username,
+      cardCount: player.cards.length,
+      isAlive: player.isAlive,
+      turnsToPlay: player.turnsToPlay
+    };
+  }
+
+  // Convert private game action to public game action
+  private toPublicGameAction(action: GameAction): PublicGameAction {
+    return {
+      type: action.type,
+      playerId: action.playerId,
+      cardType: action.card?.type,
+      targetPlayerId: action.targetPlayerId
+    };
+  }
+
   private createDeck(playerCount: number): Card[] {
     this.logger.debug(`Creating deck for ${playerCount} players`);
     const deck: Card[] = [];
     
-    // Add Exploding Kittens (number of players - 1)
-    for (let i = 0; i < playerCount - 1; i++) {
-      deck.push({ id: uuidv4(), type: CardType.EXPLODING_KITTEN });
-    }
-    this.logger.debug(`Added ${playerCount - 1} Exploding Kittens`);
-
     // Add Defuse cards (6 cards)
     for (let i = 0; i < 6; i++) {
       deck.push({ id: uuidv4(), type: CardType.DEFUSE });
@@ -60,7 +91,7 @@ export class GameService {
       }
     });
 
-    this.logger.debug(`Final deck size: ${deck.length} cards`);
+    this.logger.debug(`Initial deck size before exploding kittens: ${deck.length} cards`);
     return this.shuffleDeck(deck);
   }
 
@@ -90,11 +121,20 @@ export class GameService {
       this.logger.debug(`Player ${player.username} now has ${player.cards.length} cards`);
     });
 
-    this.logger.debug(`Remaining deck size: ${updatedDeck.length}`);
-    return { deck: updatedDeck, players: updatedPlayers };
+    // Add Exploding Kittens after dealing (number of players - 1)
+    for (let i = 0; i < players.length - 1; i++) {
+      updatedDeck.push({ id: uuidv4(), type: CardType.EXPLODING_KITTEN });
+    }
+    this.logger.debug(`Added ${players.length - 1} Exploding Kittens to the deck`);
+
+    // Shuffle the deck again after adding exploding kittens
+    const finalDeck = this.shuffleDeck(updatedDeck);
+    this.logger.debug(`Final deck size after dealing and adding kittens: ${finalDeck.length}`);
+
+    return { deck: finalDeck, players: updatedPlayers };
   }
 
-  createGame(player: Player): GameState {
+  createGame(player: Player): PublicGameState {
     this.logger.log(`Creating new game for player ${player.username} (${player.id})`);
     const gameState: GameState = {
       id: uuidv4(),
@@ -113,10 +153,10 @@ export class GameService {
 
     this.games.set(gameState.id, gameState);
     this.logger.log(`Game ${gameState.id} created successfully`);
-    return gameState;
+    return this.toPublicGameState(gameState, player.id);
   }
 
-  joinGame(gameId: string, player: Player): GameState {
+  joinGame(gameId: string, player: Player): PublicGameState {
     this.logger.log(`Player ${player.username} (${player.id}) attempting to join game ${gameId}`);
     const game = this.games.get(gameId);
     
@@ -157,10 +197,10 @@ export class GameService {
     }
 
     this.games.set(gameId, game);
-    return game;
+    return this.toPublicGameState(game, player.id);
   }
 
-  makeMove(gameId: string, move: GameMove): GameState {
+  makeMove(gameId: string, move: GameMove): PublicGameState {
     this.logger.log(`Processing move in game ${gameId}:`, move);
     const game = this.games.get(gameId);
     
@@ -186,6 +226,11 @@ export class GameService {
     }
 
     this.logger.debug(`Processing ${move.type} move for player ${currentPlayer.username}`);
+    const result = this.processMove(game, move);
+    return this.toPublicGameState(result, move.playerId);
+  }
+
+  private processMove(game: GameState, move: GameMove): GameState {
     switch (move.type) {
       case 'PLAY_CARD':
         return this.handlePlayCard(game, move);
@@ -432,5 +477,43 @@ export class GameService {
 
   deleteGame(gameId: string): void {
     this.games.delete(gameId);
+  }
+
+  // Get game state for a specific player
+  getGameStateForPlayer(gameId: string, playerId: string): PublicGameState {
+    const game = this.games.get(gameId);
+    if (!game) {
+      throw new Error('Game not found');
+    }
+    return this.toPublicGameState(game, playerId);
+  }
+
+  // Get player's hand
+  getPlayerHand(gameId: string, playerId: string): Card[] {
+    const game = this.games.get(gameId);
+    if (!game) {
+      throw new Error('Game not found');
+    }
+    
+    const player = game.players.find(p => p.id === playerId);
+    if (!player) {
+      throw new Error('Player not found');
+    }
+    
+    return [...player.cards];
+  }
+
+  // Get top three cards (for See the Future card)
+  getTopThreeCards(gameId: string, playerId: string): Card[] | undefined {
+    const game = this.games.get(gameId);
+    if (!game) {
+      throw new Error('Game not found');
+    }
+    
+    if (game.currentTurn !== playerId) {
+      throw new Error('Not your turn');
+    }
+    
+    return game.topThreeCards ? [...game.topThreeCards] : undefined;
   }
 } 

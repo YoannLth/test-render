@@ -102,6 +102,7 @@ export class GameService {
 
   private debugPlayerCards: CardType[] = [
     CardType.DEFUSE,
+    CardType.FAVOR,
     CardType.ATTACK,
     CardType.SKIP,
     CardType.SKIP,
@@ -264,8 +265,9 @@ export class GameService {
     }
 
     this.logger.debug(`Processing ${move.type} move for player ${currentPlayer.username}`);
-    const result = this.processMove(game, move);
-    return this.toPublicGameState(result, move.playerId);
+    const updatedGame = this.processMove(game, move);
+    this.games.set(gameId, updatedGame); // Make sure to save the updated game state
+    return this.toPublicGameState(updatedGame, move.playerId);
   }
 
   private processMove(game: GameState, move: GameMove): GameState {
@@ -364,10 +366,14 @@ export class GameService {
           throw new Error('Target player has no cards');
         }
         
-        const randomIndex = Math.floor(Math.random() * targetPlayer.cards.length);
-        const selectedCard = targetPlayer.cards.splice(randomIndex, 1)[0];
-        player.cards.push(selectedCard);
-        this.logger.debug(`Favor card: ${player.username} received ${selectedCard.type} from ${targetPlayer.username}`);
+        // Instead of randomly selecting a card, we'll mark that we're waiting for the target player's response
+        game.pendingFavor = {
+          fromPlayerId: move.playerId,
+          toPlayerId: move.targetPlayerId
+        };
+        
+        this.logger.debug(`Favor card: Waiting for ${targetPlayer.username} to choose a card to give to ${player.username}`);
+        return game; // Return immediately to persist the pendingFavor state
         break;
 
       case CardType.CAT:
@@ -572,5 +578,55 @@ export class GameService {
     }
     
     return game.topThreeCards ? [...game.topThreeCards] : undefined;
+  }
+
+  // Handle favor response when a player chooses which card to give
+  handleFavorResponse(gameId: string, fromPlayerId: string, cardId: string): PublicGameState {
+    const game = this.games.get(gameId);
+    if (!game) {
+      throw new Error('Game not found');
+    }
+
+    // Check if there's a pending favor request
+    if (!game.lastAction || 
+        game.lastAction.type !== 'PLAY_CARD' || 
+        game.lastAction.card?.type !== CardType.FAVOR) {
+      throw new Error('No pending favor request');
+    }
+
+    // Verify that the responding player is the target of the favor
+    if (fromPlayerId !== game.lastAction.targetPlayerId) {
+      throw new Error('Not the target player of the favor');
+    }
+
+    const fromPlayer = game.players.find(p => p.id === fromPlayerId);
+    const toPlayer = game.players.find(p => p.id === game.lastAction.playerId);
+
+    if (!fromPlayer || !toPlayer) {
+      throw new Error('Players not found');
+    }
+
+    const cardIndex = fromPlayer.cards.findIndex(c => c.id === cardId);
+    if (cardIndex === -1) {
+      throw new Error('Card not found in player hand');
+    }
+
+    // Transfer the selected card
+    const selectedCard = fromPlayer.cards.splice(cardIndex, 1)[0];
+    toPlayer.cards.push(selectedCard);
+
+    // Update the last action to reflect the card transfer
+    game.lastAction = {
+      type: 'PLAY_CARD',
+      playerId: fromPlayerId,
+      card: selectedCard,
+      targetPlayerId: toPlayer.id
+    };
+
+    this.logger.debug(`Favor completed: ${fromPlayer.username} gave ${selectedCard.type} to ${toPlayer.username}`);
+
+    // Save the updated game state
+    this.games.set(gameId, game);
+    return this.toPublicGameState(game, fromPlayerId);
   }
 } 

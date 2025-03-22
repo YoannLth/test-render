@@ -4,6 +4,7 @@ import {
   SubscribeMessage,
   ConnectedSocket,
   MessageBody,
+  WsResponse,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { GameService } from './game.service';
@@ -124,6 +125,8 @@ export class GameGateway {
       game.players.forEach(player => {
         const playerSocket = this.getSocketByPlayerId(player.id);
         if (playerSocket) {
+          const playerGameState = this.gameService.getGameStateForPlayer(data.gameId, player.id);
+          playerSocket.emit('gameStateUpdate', playerGameState);
           const hand = this.gameService.getPlayerHand(data.gameId, player.id);
           playerSocket.emit('updateHand', hand);
         }
@@ -249,6 +252,36 @@ export class GameGateway {
       return { success: true };
     } catch (error) {
       return { error: error.message };
+    }
+  }
+
+  @SubscribeMessage('respondToFavor')
+  handleRespondToFavor(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { gameId: string; fromPlayerId: string; cardId: string },
+  ): WsResponse<any> {
+    try {
+      const gameState = this.gameService.handleFavorResponse(
+        data.gameId,
+        data.fromPlayerId,
+        data.cardId,
+      );
+
+      // Update game state for all players
+      this.server.to(data.gameId).emit('gameStateUpdate', gameState);
+
+      // Update hands for both players involved
+      if (gameState.pendingFavor) {
+        const fromPlayer = this.gameService.getPlayerHand(data.gameId, data.fromPlayerId);
+        const toPlayer = this.gameService.getPlayerHand(data.gameId, gameState.pendingFavor.fromPlayerId);
+        
+        client.emit('updateHand', fromPlayer);
+        this.server.to(gameState.pendingFavor.fromPlayerId).emit('updateHand', toPlayer);
+      }
+
+      return { event: 'respondToFavor', data: { success: true } };
+    } catch (error) {
+      return { event: 'respondToFavor', data: { error: error.message } };
     }
   }
 } 
